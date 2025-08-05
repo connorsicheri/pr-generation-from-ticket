@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-AI PR Generator Tool
-====================
-A CLI utility that reads a Jira ticket, uses an LLM to generate code patches,
-and opens a pull request that references the issue.
+AI PR Generator Tool – Gemini Edition
+====================================
+A CLI utility that reads a Jira ticket, uses **Google Gemini** to generate code
+patches, and opens a pull request that references the issue.
 
-Changes in this revision (2025‑07‑28)
-------------------------------------
-• **generate_changes_with_ai** fleshed out: now does ticket‑parsing, file discovery
-  and prompt construction, leaving only the model call & diff parsing to fill in.
-• Added helper utilities (`TicketContext`, `gather_candidate_files`, etc.).
-• Outlined minimal OpenAI call (can be swapped for Anthropic / local model).
-• Added dependency guard imports & explicit type hints.
+Revision 2025‑07‑28 (b)
+----------------------
+• **Changed behaviour**: `gather_candidate_files` now *only* includes file paths
+  explicitly referenced in the ticket description. No automatic fallback file
+  sampling.
+• Updated inline comments and docstring to reflect the simpler logic.
 
 Environment variables
 ---------------------
-JIRA_URL, JIRA_TOKEN, GITHUB_TOKEN as before plus:
-OPENAI_MODEL          – model name (e.g. "gpt-4o-mini")
-MAX_PROMPT_TOKENS     – budget for repo context (default 6 000 chars)
+JIRA_URL, JIRA_TOKEN, GITHUB_TOKEN, GEMINI_API_KEY (required)
+Optional: GEMINI_MODEL (default "gemini-1.5-pro"), MAX_PROMPT_TOKENS (char budget).
 
 Usage
 -----
+$ pip install jira PyGithub google-generativeai tiktoken
+$ export JIRA_URL=… JIRA_TOKEN=… GITHUB_TOKEN=… GEMINI_API_KEY=…
 $ python ai_pr_generator.py ENG-1234
 """
 from __future__ import annotations
@@ -35,13 +35,8 @@ from pathlib import Path
 from textwrap import shorten
 from typing import List, Dict, Tuple
 
-import tiktoken  # optional, for token counting (pip install tiktoken)
-
-try:
-    import openai  # pip install openai
-except ImportError:  # keep hard dependency optional for test harness
-    openai = None  # type: ignore
-
+import tiktoken  # for token accounting
+import google.generativeai as genai  # pip install google-generativeai
 from jira import JIRA  # pip install jira
 from github import Github  # pip install PyGithub
 
@@ -88,132 +83,103 @@ def commit_push(repo_path: Path, branch_name: str, message: str):
 # ---------------------------------------------------------------------------
 
 class TicketContext:
-    """Hold structured info extracted from the Jira description."""
+    """Extract file paths (``path``) and free‑form instructions from a ticket."""
 
     def __init__(self, description: str):
-        self.description = description
-        self.file_paths, self.instructions = self._parse(description)
+        self.description = description or ""
+        self.file_paths, self.instructions = self._parse(self.description)
 
     @staticmethod
     def _parse(text: str) -> Tuple[List[str], str]:
-        """Very lightweight parse: look for markdown code fences listing paths
-        and capture the rest as free‑form instructions."""
         file_regex = re.compile(r"`([^`\n]+\.(?:py|go|js|ts|tsx|java|yaml|json))`")
         paths = file_regex.findall(text)
-        # strip code blocks for instruction body
-        instructions = re.sub(file_regex, "", text)
-        return paths, instructions.strip()
+        instructions = re.sub(file_regex, "", text).strip()
+        return paths, instructions
 
 
-# Token helper (quick approximation)
-_encoding = tiktoken.get_encoding("cl100k_base") if "tiktoken" in globals() else None
+# Token helper (roughly 4 chars per token when tiktoken unavailable)
+_encoding = tiktoken.get_encoding("cl100k_base")
 
-def count_tokens(txt: str) -> int:
-    if _encoding:
-        return len(_encoding.encode(txt))
-    return len(txt) // 4  # rough estimate
+def count_tokens(txt: str) -> int:  # kept for potential future limits
+    return len(_encoding.encode(txt))
 
 
 def gather_candidate_files(repo_path: Path, hinted_paths: List[str], budget_chars: int = 6000) -> Dict[str, str]:
-    """Return {relative_path: truncated_content} respecting char budget."""
-    selected: Dict[str, str] = {}
+    """Return *only* the files explicitly referenced in the ticket.
 
-    # 1. Explicit paths from ticket take priority
+    Each file is truncated to fit within `budget_chars` in total. No automatic
+    discovery of additional repository context is performed.
+    """
+    selected: Dict[str, str] = {}
+    per_file_budget = max(budget_chars // max(len(hinted_paths), 1), 1)
+
     for rel in hinted_paths:
         p = repo_path / rel
-        if p.exists():
-            content = p.read_text(encoding="utf-8", errors="ignore")
-            selected[rel] = shorten(content, width=budget_chars // 2, placeholder="\n…\n")
-            budget_chars -= len(selected[rel])
-            if budget_chars <= 0:
-                return selected
-
-    # 2. Fallback: heuristically sample small files (<400 lines) modified recently
-    for p in repo_path.rglob("*.*"):
-        if p.suffix not in {".py", ".go", ".js", ".ts", ".tsx", ".yaml", ".json"}:
+        if not p.exists():
+            # Silently skip missing files – model can decide to create them.
             continue
-        if p.is_dir() or p.name.startswith("."):
-            continue
-        if p.as_posix() in selected:
-            continue
-        text = p.read_text(encoding="utf-8", errors="ignore")
-        if len(text) > 10_000:
-            continue  # skip huge blobs
-        selected[p.relative_to(repo_path).as_posix()] = shorten(text, width=budget_chars // 2, placeholder="\n…\n")
-        budget_chars -= len(selected[p.relative_to(repo_path).as_posix()])
-        if budget_chars <= 0:
-            break
+        content = p.read_text("utf-8", errors="ignore")
+        selected[rel] = shorten(content, width=per_file_budget, placeholder="\n…\n")
     return selected
 
 
 # ---------------------------------------------------------------------------
-# AI‑powered code generation
+# Gemini API integration
 # ---------------------------------------------------------------------------
 
+def call_gemini(prompt: str) -> str:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY env var missing.")
+    genai.configure(api_key=api_key)
+    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+    model = genai.GenerativeModel(model_name)
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+
 def build_prompt(issue, ctx: TicketContext, repo_snippets: Dict[str, str]) -> str:
-    """Compose a single prompt string for the model."""
-    header = (
+    prompt = (
         f"You are a senior software engineer tasked with implementing Jira ticket {issue.key}.\n\n"
         f"Ticket summary: {issue.fields.summary}\n\n"
         "Ticket description (user instructions):\n" + ctx.instructions + "\n\n"
-        "Repository snippets (read‑only):\n"
+        "Repository snippets (read‑only context):\n"
     )
     for path, content in repo_snippets.items():
-        header += f"--- BEGIN FILE {path} ---\n{content}\n--- END FILE {path} ---\n"
-    header += (
-        "\nReturn the **minimal** set of file changes as valid JSON in the shape:\n"
-        "{\n  \"patches\": [\n    {\"path\": \"relative/file.py\", \"content\": \"full new file content…\"},\n    …\n  ]\n}\n"
-        "Do not wrap the JSON in markdown fences; no other commentary."
+        prompt += f"--- BEGIN FILE {path} ---\n{content}\n--- END FILE {path} ---\n"
+    prompt += (
+        "\nReturn ONLY valid JSON shaped as:\n"
+        "{ \"patches\": [ { \"path\": \"relative/file\", \"content\": \"new content…\" }, … ] }\n"
+        "No markdown fences, no commentary."
     )
-    return header
-
-
-def call_openai(prompt: str) -> str:
-    if openai is None:
-        raise RuntimeError("openai package not available – install or stub.")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    response = openai.ChatCompletion.create(
-        model=model,
-        messages=[{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    return response.choices[0].message.content.strip()
+    return prompt
 
 
 def parse_json_patches(json_text: str) -> List[dict]:
-    """Convert model JSON string into list[dict]."""
     try:
         data = json.loads(json_text)
         return data.get("patches", [])
     except json.JSONDecodeError as e:
-        raise ValueError("Malformed JSON from model") from e
+        raise ValueError("Malformed JSON from Gemini") from e
 
 
 def generate_changes_with_ai(issue, repo_path: Path) -> List[dict]:
-    """High‑level orchestration for file discovery → prompt → patches."""
-    description = issue.fields.description or ""
-    ctx = TicketContext(description)
-
+    ctx = TicketContext(issue.fields.description or "")
     repo_snippets = gather_candidate_files(
         repo_path,
         hinted_paths=ctx.file_paths,
         budget_chars=int(os.getenv("MAX_PROMPT_TOKENS", "6000")),
     )
-
     prompt = build_prompt(issue, ctx, repo_snippets)
-
-    # ––– Call the LLM –––
-    json_text = call_openai(prompt)
-
-    patches = parse_json_patches(json_text)
-    return patches
+    json_text = call_gemini(prompt)
+    return parse_json_patches(json_text)
 
 
 def apply_patches(changes: List[dict], repo_path: Path):
-    for file_change in changes:
-        dst = repo_path / file_change["path"]
+    for fc in changes:
+        dst = repo_path / fc["path"]
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(file_change["content"], encoding="utf-8")
+        dst.write_text(fc["content"], encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +196,7 @@ def create_pull_request(gh: Github, repo_full_name: str, branch: str, base: str,
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate a PR from a Jira ticket using AI")
+    parser = argparse.ArgumentParser(description="Generate a PR from a Jira ticket using Gemini")
     parser.add_argument("issue_key", help="Jira issue key, e.g. ENG-1234")
     args = parser.parse_args()
 
@@ -251,7 +217,6 @@ def main():
         apply_patches(patches, repo_path)
         commit_push(repo_path, branch_name, f"{issue.key}: {issue.fields.summary}")
 
-        # Convert repo_url to "owner/name"
         parts = repo_url.rstrip(".git").split("/")[-2:]
         repo_full_name = "/".join(parts)
         pr = create_pull_request(
@@ -260,12 +225,7 @@ def main():
             branch=branch_name,
             base=base_branch,
             title=issue.fields.summary,
-            body=issue.fields.description or "Automated PR by AI bot.",
+            body=issue.fields.description or "Automated PR by Gemini bot.",
         )
 
-    jira.add_comment(issue, f"PR opened: {pr.html_url}")
-    print("Pull request created:", pr.html_url)
-
-
-if __name__ == "__main__":
-    main()
+    jira.add_comment
