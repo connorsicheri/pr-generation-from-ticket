@@ -110,7 +110,6 @@ def test_jira_connection():
         
         # Import the TicketContext class from main.py
         import sys
-        import os
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         
         try:
@@ -139,17 +138,27 @@ def test_jira_connection():
             print('-' * 50)
             print()
             
-            # Show the regex pattern used
+            # Show the regex patterns used
             import re
-            file_regex = re.compile(r"`([^`\n]+\.(?:py|go|js|ts|tsx|java|yaml|json))`")
-            print('🔧 File detection regex pattern:')
-            print(f'   {file_regex.pattern}')
-            print('   This looks for: `filename.ext` where ext is py, go, js, ts, tsx, java, yaml, json')
+            jira_regex = re.compile(r"\{\{([^{}\n]*[/\\]?[^{}\n/\\]*\.(?:py|go|js|ts|tsx|java|yaml|json|yml|md|txt|sh|jsx|vue|php|rb|cpp|c|h))\}\}")
+            backtick_regex = re.compile(r"`([^`\n]*[/\\]?[^`\n/\\]*\.(?:py|go|js|ts|tsx|java|yaml|json|yml|md|txt|sh|jsx|vue|php|rb|cpp|c|h))`")
+            
+            print('🔧 File detection patterns:')
+            print('   PRIMARY (Jira format): {{path/to/filename.ext}}')
+            print('   FALLBACK (Markdown): `path/to/filename.ext`')
+            print('   Supported extensions: py, go, js, ts, tsx, java, yaml, json, yml, md, txt, sh, jsx, vue, php, rb, cpp, c, h')
             print()
             
-            # Test the regex directly on the description
-            raw_matches = file_regex.findall(description)
-            print(f'🔍 Raw regex matches in description: {raw_matches}')
+            # Test both regex patterns on the description
+            jira_matches = jira_regex.findall(description)
+            backtick_matches = backtick_regex.findall(description)
+            print(f'🔍 Jira {{{{...}}}} matches in description: {jira_matches}')
+            print(f'🔍 Backtick `...` matches in description: {backtick_matches}')
+            print()
+            
+            # Only show if no matches found (for debugging)
+            if not jira_matches and not backtick_matches:
+                print('💡 Expected format: {{path/to/file.ext}} or `path/to/file.ext`')
             
         except ImportError as e:
             print(f'❌ Could not import TicketContext: {e}')

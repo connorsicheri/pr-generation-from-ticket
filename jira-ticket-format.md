@@ -15,7 +15,7 @@ Add loading state to button component
 
 ### **2. Description** 
 The description should contain:
-- **File paths** in backticks (`` `file/path.ext` ``)
+- **File paths** in Jira code blocks: {{src/components/Button.tsx}} (or backticks as fallback: `src/components/Button.tsx`)
 - **Clear instructions** about what to implement
 - **Context** about the feature/fix
 

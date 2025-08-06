@@ -86,10 +86,27 @@ def clone_and_branch(repo_url: str, branch_name: str, workdir: Path) -> Path:
     print(f"🔄 Cloning repository...")
     print(f"   🔗 Repository: {repo_url}")
     print(f"   🌿 Branch: {branch_name}")
-    print(f"   📁 Temporary directory: {workdir}")
     
     repo_path = workdir / "repo"
-    run(["git", "clone", repo_url, str(repo_path)])
+    
+    # For HTTPS URLs, we'll use the GitHub token for authentication
+    if repo_url.startswith('https://github.com/'):
+        # GitHub requires token authentication for private repos
+        github_token = os.environ.get("GITHUB_TOKEN")
+        if github_token:
+            # Insert token into URL for authentication
+            auth_url = repo_url.replace('https://github.com/', f'https://{github_token}@github.com/')
+            print(f"   🔐 Using GitHub token for authentication")
+            run(["git", "clone", auth_url, str(repo_path)])
+        else:
+            print(f"   ⚠️  No GitHub token found, trying without authentication")
+            run(["git", "clone", repo_url, str(repo_path)])
+    else:
+        # SSH or other URLs - use as-is (assumes SSH keys are configured)
+        if repo_url.startswith('git@'):
+            print(f"   🔑 Using SSH authentication")
+        run(["git", "clone", repo_url, str(repo_path)])
+    
     run(["git", "checkout", "-b", branch_name], cwd=repo_path)
     
     print(f"   ✅ Repository cloned and branch created")
@@ -120,17 +137,38 @@ class TicketContext:
 
     def __init__(self, description: str):
         self.description = description or ""
-        print(f"🔍 Parsing ticket description...")
         self.file_paths, self.instructions = self._parse(self.description)
-        print(f"   📁 Found {len(self.file_paths)} file(s): {self.file_paths}")
-        print(f"   📝 Instructions length: {len(self.instructions)} characters")
+        print(f"📁 Found {len(self.file_paths)} file(s): {self.file_paths}")
 
     @staticmethod
     def _parse(text: str) -> Tuple[List[str], str]:
-        file_regex = re.compile(r"`([^`\n]+\.(?:py|go|js|ts|tsx|java|yaml|json))`")
+        # Jira uses {{...}} for code blocks, not backticks
+        # Matches: {{path/to/file.ext}} with nested directories
+        file_regex = re.compile(r"\{\{([^{}\n]*[/\\]?[^{}\n/\\]*\.(?:py|go|js|ts|tsx|java|yaml|json|yml|md|txt|sh|jsx|vue|php|rb|cpp|c|h))\}\}")
         paths = file_regex.findall(text)
-        instructions = re.sub(file_regex, "", text).strip()
-        return paths, instructions
+        
+        # Also support backticks as fallback for manual entry
+        backtick_regex = re.compile(r"`([^`\n]*[/\\]?[^`\n/\\]*\.(?:py|go|js|ts|tsx|java|yaml|json|yml|md|txt|sh|jsx|vue|php|rb|cpp|c|h))`")
+        backtick_paths = backtick_regex.findall(text)
+        
+        # Combine both patterns
+        all_paths = paths + backtick_paths
+        
+        # Clean up paths - remove leading ./ and normalize
+        cleaned_paths = []
+        for path in all_paths:
+            cleaned_path = path.strip()
+            # Remove leading ./
+            if cleaned_path.startswith('./'):
+                cleaned_path = cleaned_path[2:]
+            # Convert backslashes to forward slashes for consistency
+            cleaned_path = cleaned_path.replace('\\', '/')
+            cleaned_paths.append(cleaned_path)
+        
+        # Remove both patterns from instructions
+        instructions = re.sub(file_regex, "", text)
+        instructions = re.sub(backtick_regex, "", instructions).strip()
+        return cleaned_paths, instructions
 
 
 # Token helper (roughly 4 chars per token when tiktoken unavailable)
@@ -146,26 +184,21 @@ def gather_candidate_files(repo_path: Path, hinted_paths: List[str], budget_char
     Each file is truncated to fit within `budget_chars` in total. No automatic
     discovery of additional repository context is performed.
     """
-    print(f"📂 Gathering candidate files...")
-    print(f"   📊 Character budget: {budget_chars}")
-    print(f"   📁 Files to examine: {hinted_paths}")
+    print(f"📂 Loading {len(hinted_paths)} file(s) from repository...")
     
     selected: Dict[str, str] = {}
     per_file_budget = max(budget_chars // max(len(hinted_paths), 1), 1)
-    print(f"   📄 Per-file budget: {per_file_budget} characters")
 
     for rel in hinted_paths:
         p = repo_path / rel
         if not p.exists():
-            print(f"   ⚠️  File not found: {rel} (will be created by AI)")
+            print(f"   ⚠️  {rel} (will be created)")
             continue
         content = p.read_text("utf-8", errors="ignore")
-        original_length = len(content)
         truncated_content = shorten(content, width=per_file_budget, placeholder="\n…\n")
         selected[rel] = truncated_content
-        print(f"   ✅ Loaded {rel}: {original_length} → {len(truncated_content)} chars")
+        print(f"   ✅ {rel}")
     
-    print(f"   📁 Total files loaded: {len(selected)}")
     return selected
 
 
@@ -174,32 +207,23 @@ def gather_candidate_files(repo_path: Path, hinted_paths: List[str], budget_char
 # ---------------------------------------------------------------------------
 
 def call_gemini(prompt: str) -> str:
-    print(f"🤖 Calling Gemini AI...")
+    print(f"🤖 Generating code with {os.getenv('GEMINI_MODEL', 'gemini-1.5-pro')}...")
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY env var missing.")
     
     model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
-    print(f"   🧠 Model: {model_name}")
-    print(f"   📝 Prompt length: {len(prompt)} characters")
-    
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
     
-    print("   🔄 Generating content...")
     response = model.generate_content(prompt)
     result = response.text.strip()
     
-    print(f"   ✅ Response received: {len(result)} characters")
-    print(f"   🔍 First 100 chars: {result[:100]}...")
+    print(f"   ✅ Generated {len(result)} characters of code")
     return result
 
 
 def build_prompt(issue, ctx: TicketContext, repo_snippets: Dict[str, str]) -> str:
-    print(f"📝 Building AI prompt...")
-    print(f"   🎫 Ticket: {issue.key} - {issue.fields.summary}")
-    print(f"   📁 Files in context: {len(repo_snippets)}")
-    
     prompt = (
         f"You are a senior software engineer tasked with implementing Jira ticket {issue.key}.\n\n"
         f"Ticket summary: {issue.fields.summary}\n\n"
@@ -214,31 +238,40 @@ def build_prompt(issue, ctx: TicketContext, repo_snippets: Dict[str, str]) -> st
         "No markdown fences, no commentary."
     )
     
-    print(f"   📊 Final prompt length: {len(prompt)} characters")
     return prompt
 
 
 def parse_json_patches(json_text: str) -> List[dict]:
-    print(f"🔍 Parsing AI response...")
     try:
-        data = json.loads(json_text)
+        # Clean up the response - remove markdown code fences if present
+        cleaned_text = json_text.strip()
+        
+        # Remove ```json at the start and ``` at the end
+        if cleaned_text.startswith('```json'):
+            cleaned_text = cleaned_text[7:]  # Remove ```json
+        elif cleaned_text.startswith('```'):
+            cleaned_text = cleaned_text[3:]   # Remove ```
+            
+        if cleaned_text.endswith('```'):
+            cleaned_text = cleaned_text[:-3]  # Remove trailing ```
+            
+        cleaned_text = cleaned_text.strip()
+        
+        # Parse the cleaned JSON
+        data = json.loads(cleaned_text)
         patches = data.get("patches", [])
-        print(f"   ✅ Successfully parsed {len(patches)} patches")
-        for i, patch in enumerate(patches):
-            print(f"     {i+1}. {patch.get('path', 'unknown')} ({len(patch.get('content', ''))} chars)")
+        print(f"✅ Parsed {len(patches)} file patch(es)")
         return patches
     except json.JSONDecodeError as e:
-        print(f"   ❌ JSON parsing failed: {e}")
-        print(f"   🔍 Raw response: {json_text[:500]}...")
+        print(f"❌ Failed to parse AI response: {e}")
+        print(f"Raw response: {json_text[:300]}...")
+        print(f"Cleaned response: {cleaned_text[:300] if 'cleaned_text' in locals() else 'N/A'}...")
         raise ValueError("Malformed JSON from Gemini") from e
 
 
 def generate_changes_with_ai(issue, repo_path: Path) -> List[dict]:
-    print(f"🧠 Generating changes with AI...")
-    
     # Parse ticket context
     ctx = TicketContext(issue.fields.description or "")
-    print()
     
     # Gather file context
     budget_chars = int(os.getenv("MAX_PROMPT_TOKENS", "6000"))
@@ -247,38 +280,32 @@ def generate_changes_with_ai(issue, repo_path: Path) -> List[dict]:
         hinted_paths=ctx.file_paths,
         budget_chars=budget_chars,
     )
-    print()
     
     # Build and send prompt
     prompt = build_prompt(issue, ctx, repo_snippets)
     json_text = call_gemini(prompt)
-    print()
     
     # Parse response
     patches = parse_json_patches(json_text)
-    print()
     
     return patches
 
 
 def apply_patches(changes: List[dict], repo_path: Path):
-    print(f"💾 Applying patches...")
-    for i, fc in enumerate(changes):
+    print(f"💾 Writing {len(changes)} file(s)...")
+    for fc in changes:
         file_path = fc["path"]
         content = fc["content"]
         dst = repo_path / file_path
-        
-        print(f"   {i+1}. Writing {file_path} ({len(content)} characters)")
         
         # Create directory if it doesn't exist
         dst.parent.mkdir(parents=True, exist_ok=True)
         
         # Write the file
         dst.write_text(content, encoding="utf-8")
-        
-        print(f"      ✅ File written successfully")
+        print(f"   ✅ {file_path}")
     
-    print(f"   🎉 All {len(changes)} patches applied successfully")
+    print(f"✅ Applied all patches")
 
 
 # ---------------------------------------------------------------------------
@@ -325,10 +352,51 @@ def main():
     # Step 2: Extract repository information
     print("📄 STEP 2: Extracting repository information")
     print("-" * 30)
-    repo_url = issue.fields.customfield_12345  # Adjust to your Jira schema
+    
+    repo_url = None
+    
+    # First, try to extract from ticket description
+    description = issue.fields.description or ""
+    if description:
+        import re
+        # Look for GitHub URLs in description
+        github_urls = re.findall(r'https://github\.com/[^\s]+', description)
+        if github_urls:
+            repo_url = github_urls[0].rstrip('.,;)')  # Clean up common trailing chars
+            print(f"📁 Found repository URL in description: {repo_url}")
+        else:
+            # Look for any git URLs
+            git_urls = re.findall(r'[^\s]*\.git[^\s]*', description)
+            if git_urls:
+                repo_url = git_urls[0].rstrip('.,;)')
+                print(f"📁 Found git URL in description: {repo_url}")
+    
+    # If not found in description, check custom fields
     if not repo_url:
-        print("❌ Error: Ticket missing repository URL (custom field).")
-        raise ValueError("Ticket missing repository URL (custom field).")
+        # Based on your test output, check the actual custom fields from your Jira
+        possible_repo_fields = [
+            'customfield_11712',  # This had a URL in your test data
+            'customfield_12345', 'customfield_10001', 'customfield_10002', 'customfield_10003'
+        ]
+        
+        for field_name in possible_repo_fields:
+            try:
+                field_value = getattr(issue.fields, field_name, None)
+                if field_value and ('github.com' in str(field_value) or '.git' in str(field_value)):
+                    repo_url = str(field_value)
+                    print(f"📁 Found repository URL in {field_name}: {repo_url}")
+                    break
+            except:
+                continue
+    
+    # If no repo URL found anywhere, fail with helpful message
+    if not repo_url:
+        print("❌ Error: No repository URL found!")
+        print("💡 Solutions:")
+        print("   1. Add GitHub URL to ticket description")
+        print("   2. Configure a custom field in Jira with repository URL")
+        print("   3. Example description: 'Fix bug in https://github.com/yourorg/yourrepo.git'")
+        raise ValueError("Repository URL must be specified in ticket description or custom field.")
     
     print(f"📁 Repository URL: {repo_url}")
     branch_name = f"ai/{issue.key.lower()}"
