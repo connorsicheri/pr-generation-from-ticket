@@ -70,16 +70,26 @@ def fetch_issue(jira: JIRA, issue_key: str):
 # Git helpers
 # ---------------------------------------------------------------------------
 
-def run(cmd: List[str], cwd: str | Path | None = None):
+def run(cmd: List[str], cwd: str | Path | None = None, extra_env: dict | None = None):
     print(f"💻 Running: {' '.join(cmd)}")
     if cwd:
         print(f"   📁 Working directory: {cwd}")
-    try:
-        subprocess.check_call(cmd, cwd=cwd)
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    # Capture stdout/stderr for better diagnostics
+    proc = subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True)
+    if proc.stdout:
+        print(proc.stdout.strip())
+    if proc.returncode == 0:
         print("   ✅ Command completed successfully")
-    except subprocess.CalledProcessError as e:
-        print(f"   ❌ Command failed with exit code {e.returncode}")
-        raise
+        return
+    # On failure, print stderr and return code
+    if proc.stderr:
+        print("   🔻 stderr:")
+        print(proc.stderr.strip())
+    print(f"   ❌ Command failed with exit code {proc.returncode}")
+    raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
 def clone_and_branch(repo_url: str, branch_name: str, workdir: Path) -> Path:
@@ -124,8 +134,52 @@ def commit_push(repo_path: Path, branch_name: str, message: str):
     except subprocess.CalledProcessError:
         print("⚠️  No changes to commit – exiting.")
         raise SystemExit(0)
-    run(["git", "push", "-u", "origin", branch_name], cwd=repo_path)
-    print("   ✅ Changes committed and pushed successfully")
+
+    # Attempt normal push first, with verbose git tracing for actionable logs
+    trace_env = {
+        "GIT_TRACE": "1",
+        "GIT_TRACE_PACK_ACCESS": "1",
+        "GIT_TRACE_PACKET": "1",
+        "GIT_TRACE_PERFORMANCE": "1",
+        "GIT_CURL_VERBOSE": "1",
+    }
+    try:
+        run(["git", "push", "-u", "origin", branch_name], cwd=repo_path, extra_env=trace_env)
+        print("   ✅ Changes committed and pushed successfully")
+        return
+    except subprocess.CalledProcessError:
+        print("⚠️  Push failed. Collecting diagnostics…")
+        # Diagnostics to understand divergence/non-fast-forward
+        try:
+            run(["git", "remote", "-v"], cwd=repo_path)
+        except Exception:
+            pass
+        try:
+            run(["git", "status", "-sb"], cwd=repo_path)
+        except Exception:
+            pass
+        try:
+            run(["git", "log", "--oneline", "-n", "10"], cwd=repo_path)
+        except Exception:
+            pass
+        try:
+            run(["git", "fetch", "origin", branch_name], cwd=repo_path)
+        except Exception:
+            pass
+        try:
+            run(["git", "ls-remote", "--heads", "origin", branch_name], cwd=repo_path)
+        except Exception:
+            pass
+        try:
+            run(["git", "rev-parse", "HEAD"], cwd=repo_path)
+        except Exception:
+            pass
+        try:
+            run(["git", "rev-parse", f"origin/{branch_name}"], cwd=repo_path)
+        except Exception:
+            pass
+        # Re-raise to fail the job cleanly; maintain current behavior without force-push
+        raise
 
 
 # ---------------------------------------------------------------------------
