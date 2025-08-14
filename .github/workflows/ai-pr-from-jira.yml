@@ -44,14 +44,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install jira PyGithub google-generativeai tiktoken
 
+      - name: Configure git author
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+
       - name: Resolve inputs
         id: resolve
         run: |
           ISSUE_KEY="${{ github.event.inputs.issue_key }}"; if [ -z "$ISSUE_KEY" ]; then ISSUE_KEY="${{ github.event.client_payload.issue_key }}"; fi
+          ENV_NAME="${{ github.event.inputs.env_name }}"; if [ -z "$ENV_NAME" ]; then ENV_NAME="${{ github.event.client_payload.env_name }}"; fi
           if [ -z "$ISSUE_KEY" ]; then echo "issue_key missing" && exit 1; fi
           echo "issue_key=$ISSUE_KEY" >> $GITHUB_OUTPUT
+          echo "env_name=$ENV_NAME" >> $GITHUB_OUTPUT
 
       - name: Run AI PR generator
+        env:
+          ENV_NAME_PRINT: ${{ steps.resolve.outputs.env_name }}
         run: |
-          echo "Running for issue ${{ steps.resolve.outputs.issue_key }} in environment '${{ job.environment }}'"
+          echo "Running for issue ${{ steps.resolve.outputs.issue_key }} in environment '${ENV_NAME_PRINT}'"
           python app/main.py "${{ steps.resolve.outputs.issue_key }}"
