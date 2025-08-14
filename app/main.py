@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from textwrap import shorten
 from typing import List, Dict, Tuple
@@ -92,19 +93,16 @@ def run(cmd: List[str], cwd: str | Path | None = None, extra_env: dict | None = 
     raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
-def clone_and_branch(repo_url: str, branch_name: str, workdir: Path) -> Path:
+def clone_and_branch(repo_url: str, desired_branch_name: str, workdir: Path) -> Tuple[Path, str]:
     print(f"🔄 Cloning repository...")
     print(f"   🔗 Repository: {repo_url}")
-    print(f"   🌿 Branch: {branch_name}")
     
     repo_path = workdir / "repo"
     
     # For HTTPS URLs, we'll use the GitHub token for authentication
     if repo_url.startswith('https://github.com/'):
-        # GitHub requires token authentication for private repos
         github_token = os.environ.get("GITHUB_TOKEN")
         if github_token:
-            # Insert token into URL for authentication
             auth_url = repo_url.replace('https://github.com/', f'https://{github_token}@github.com/')
             print(f"   🔐 Using GitHub token for authentication")
             run(["git", "clone", auth_url, str(repo_path)])
@@ -116,11 +114,27 @@ def clone_and_branch(repo_url: str, branch_name: str, workdir: Path) -> Path:
         if repo_url.startswith('git@'):
             print(f"   🔑 Using SSH authentication")
         run(["git", "clone", repo_url, str(repo_path)])
-    
-    run(["git", "checkout", "-b", branch_name], cwd=repo_path)
-    
+
+    # Determine final branch name to avoid colliding with an existing remote branch
+    final_branch = desired_branch_name
+    try:
+        # Fetch remote heads for the desired branch
+        subprocess.run(["git", "fetch", "origin", desired_branch_name], cwd=repo_path, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        ls = subprocess.run(["git", "ls-remote", "--heads", "origin", desired_branch_name], cwd=repo_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        exists_remote = ls.returncode == 0 and ls.stdout.strip() != ""
+        if exists_remote:
+            actor = os.getenv("GITHUB_ACTOR", "runner")
+            suffix = time.strftime("%Y%m%d%H%M%S")
+            final_branch = f"{desired_branch_name}-{actor}-{suffix}"
+            print(f"   ℹ️  Remote '{desired_branch_name}' exists; using '{final_branch}' to avoid non-fast-forward")
+    except Exception as e:
+        print(f"   ⚠️  Could not check remote branch existence: {e}")
+
+    # Checkout the final branch
+    run(["git", "checkout", "-b", final_branch], cwd=repo_path)
+    print(f"   🌿 Branch: {final_branch}")
     print(f"   ✅ Repository cloned and branch created")
-    return repo_path
+    return repo_path, final_branch
 
 
 def commit_push(repo_path: Path, branch_name: str, message: str):
@@ -453,9 +467,9 @@ def main():
         raise ValueError("Repository URL must be specified in ticket description or custom field.")
     
     print(f"📁 Repository URL: {repo_url}")
-    branch_name = f"ai/{issue.key.lower()}"
+    desired_branch = f"ai/{issue.key.lower()}"
     base_branch = os.getenv("DEFAULT_BASE_BRANCH", "main")
-    print(f"🌿 New branch: {branch_name}")
+    print(f"🌿 New branch: {desired_branch}")
     print(f"🌿 Base branch: {base_branch}")
     print()
 
@@ -472,8 +486,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="ai_pr_") as tmp:
         print(f"📁 Using temporary directory: {tmp}")
         
-        # Clone repository and create branch
-        repo_path = clone_and_branch(repo_url, branch_name, Path(tmp))
+        # Clone repository and create a safe, unique branch if needed
+        repo_path, branch_name = clone_and_branch(repo_url, desired_branch, Path(tmp))
         print()
         
         # Generate AI changes
