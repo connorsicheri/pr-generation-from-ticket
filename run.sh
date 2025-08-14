@@ -63,7 +63,7 @@ echo "🎫 Processing Jira issue: $ISSUE_KEY"
 echo ""
 
 # Run the main script
-python main.py "$ISSUE_KEY"
+python app/main.py "$ISSUE_KEY"
 
 echo ""
 echo "🎉 Done! Check your GitHub repository for the new pull request."

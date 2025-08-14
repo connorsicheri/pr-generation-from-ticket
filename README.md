@@ -2,89 +2,90 @@
 
 A CLI utility that reads a Jira ticket, uses **Google Gemini** to generate code patches, and opens a pull request that references the issue.
 
-## 🚀 Quick Start (For Managers)
+## 🚀 Quick Start (CI-first)
 
-### Prerequisites
-- [Conda](https://docs.conda.io/en/latest/miniconda.html) installed on your system
-- Access to the required API tokens (see Environment Variables section)
+Run entirely via GitHub Actions with per-user GitHub Environments. No local installs required.
 
-### Setup (30 seconds!)
+### Configure per-user GitHub Environments
 
-```bash
-git clone <your-repo-url>
-cd pr-generation-from-ticket
-./setup.sh
-```
+For each user (e.g., `manager`, `chris`):
 
-That's it! The setup script automatically handles everything - conda environment, dependencies, and API token configuration. 🎉
+1. In GitHub: Settings → Environments → New environment (name it after the user)
+2. Add secrets to that environment:
+   - `JIRA_URL` (e.g., https://your-domain.atlassian.net)
+   - `JIRA_EMAIL` (user's Atlassian email, if needed by auth)
+   - `JIRA_TOKEN` (user's Jira API token)
+   - `GEMINI_API_KEY` (user's Gemini key)
+   - `GH_PAT` (user's GitHub Personal Access Token with repo permissions)
+3. Optional variables (Environment → Variables):
+   - `DEFAULT_BASE_BRANCH` (default `main`)
+   - `MAX_PROMPT_TOKENS` (default `6000`)
 
-## 🚀 Usage
+### Run the workflow
 
-```bash
-./run.sh TICKET-KEY
-```
+- Manual: Actions → “AI PR from Jira” → Run workflow
+  - `issue_key`: e.g., `QUEST-39`
+  - `env_name`: your environment, e.g., `manager`
 
-The setup script automatically configures all required API tokens and environment variables.
-
-## 📋 How It Works
-
-1. **Fetches Jira Ticket**: Reads the ticket description and extracts file paths and instructions
-2. **Clones Repository**: Creates a new branch for the changes
-3. **AI Code Generation**: Uses Gemini AI to generate code patches based on the ticket
-4. **Creates Pull Request**: Commits changes and opens a PR on GitHub
+- From Jira Automation (label trigger): send repository_dispatch
+  - URL: `https://api.github.com/repos/<owner>/<repo>/dispatches`
+  - Headers: `Authorization: Bearer <GitHub PAT>`, `Accept: application/vnd.github+json`
+  - Body:
+    ```json
+    {
+      "event_type": "jira-ai-pr",
+      "client_payload": {
+        "issue_key": "{{issue.key}}",
+        "env_name": "manager"
+      }
+    }
+    ```
 
 ## 📝 Jira Ticket Format
 
 For best results, your Jira tickets should include:
 
-- **File paths** in backticks: `src/components/Button.tsx`
+- **File paths** in Jira code blocks: {{src/components/Button.tsx}} (fallback backticks also supported)
 - **Clear instructions** about what needs to be implemented
-- **Repository URL** in a custom field (adjust `customfield_12345` in main.py)
+- **Repository URL** in the ticket description (e.g., `https://github.com/org/repo.git`)
 
 Example ticket description:
 ```
-Update the button component in `src/components/Button.tsx` to support a new 'loading' state.
+Update the button component in {{src/components/Button.tsx}} to support a new 'loading' state.
 
-The button should show a spinner when loading=true and be disabled during this state.
+Repository URL: https://github.com/org/repo.git
 ```
 
-📖 **For detailed formatting guidelines and examples, see: [jira-ticket-format.md](jira-ticket-format.md)**
+📖 See full guide: [jira-ticket-format.md](jira-ticket-format.md)
 
-## 🛠 Example
+## 🛠 Local Example (optional)
 
-```bash
-./run.sh ENG-1234
-```
-
-The tool automatically:
-1. Reads ticket ENG-1234 from Jira
-2. Generates code changes using AI
-3. Creates branch: ai/eng-1234
-4. Commits and pushes changes
-5. Opens a pull request on GitHub
-
-## 🔍 Troubleshooting
-
-If you encounter any issues, simply re-run the setup:
+If you want to run locally for development/debugging:
 
 ```bash
 ./setup.sh
+conda activate pr-generation-from-ticket
+./configure_env.sh
+./run.sh ENG-1234
 ```
 
-The setup script handles all common issues automatically.
+## 🔍 Troubleshooting CI
+
+- Verify the environment name passed to the workflow matches an existing GitHub Environment
+- Ensure all required secrets exist in that Environment: `JIRA_URL`, `JIRA_TOKEN`, `GEMINI_API_KEY`, `GH_PAT` (and `JIRA_EMAIL` if needed)
+- Check the Action logs; the job prints which environment it used
 
 ## 📁 Project Files
 
-- **`main.py`**: The main AI PR generator script
-- **`environment.yml`**: Conda environment with all dependencies (includes Rust compiler)
-- **`environment-simple.yml`**: Simplified conda environment (recommended)
-- **`setup.sh`**: Automated environment setup script
-- **`configure_env.sh`**: Script to generate environment template for manual configuration
-- **`env_template.sh`**: Template for environment variables (manual setup)
-- **`run.sh`**: Main script to run the AI PR Generator with validation and easy execution
-- **`jira-ticket-format.md`**: Detailed guide on how to format Jira tickets for optimal AI results
-- **`.gitignore`**: Prevents sensitive files from being committed to git
-- **`README.md`**: This documentation file
+- **`app/main.py`**: The main AI PR generator script
+- **`environment.yml`**: Conda environment
+- **`environment-simple.yml`**: Simplified conda environment
+- **`setup.sh`**: Automated environment setup script (local dev)
+- **`configure_env.sh`**: Generates local `env_setup.sh` (local dev)
+- **`run.sh`**: Local runner with validation
+- **`jira-ticket-format.md`**: Jira ticket formatting guide
+- **`.github/workflows/ai-pr-from-jira.yml`**: CI pipeline using per-user GitHub Environments
+- **`.gitignore`**, **`README.md`**, **`LICENSE`**
 
 ## 📄 License
 
