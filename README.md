@@ -20,8 +20,13 @@ For each user (e.g., `manager`, `chris`):
 3. Optional variables (Environment → Variables):
    - `DEFAULT_BASE_BRANCH` (default `main`)
    - `MAX_PROMPT_TOKENS` (default `6000`)
-   - `MAX_EXTERNAL_CONTEXT_CHARS` (default `6000`) – budget for external refs (Confluence, PRs)
+   - `MAX_EXTERNAL_CONTEXT_CHARS` (default `20000`) – budget for external refs (Confluence, PRs, web)
+   - `PER_SOURCE_SUMMARY_CHAR_LIMIT` (default `3000`) – cap for each individual source summary
    - `SUMMARIZE_EXTERNAL_CONTEXT` (default `true`) – summarize external refs with Gemini before inclusion
+   - `ENABLE_CROSS_SOURCE_SYNTHESIS` (default `true`) – adds a synthesized brief across sources
+   - `SYNTHESIS_CHAR_LIMIT` (default `2000`) – cap for the synthesis brief
+   - `EXTERNAL_FETCH_TIMEOUT_MS` (default `10000`) – timeout for fetching external pages
+   - `GITHUB_PR_FILES_LIMIT` (default `50`) – limit PR files examined
 
 ### Run the workflow
 
@@ -103,7 +108,7 @@ For best results, your Jira tickets should include:
 - **File paths** in Jira code blocks: {{src/components/Button.tsx}} (fallback backticks also supported)
 - **Clear instructions** about what needs to be implemented
 - **Repository URL** in the ticket description (e.g., `https://github.com/org/repo.git`)
- - **External references (optional)**: Confluence page link(s) and/or GitHub PR link(s) to use as context
+- **External references (optional)**: Confluence page link(s) and/or GitHub PR link(s) to use as context (either in description or in Related links)
 
 Example ticket description:
 ```

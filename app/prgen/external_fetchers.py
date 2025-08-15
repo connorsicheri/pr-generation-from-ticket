@@ -41,7 +41,8 @@ def fetch_confluence_page(url: str) -> Tuple[str, str]:
         raise RuntimeError("JIRA_EMAIL and JIRA_TOKEN are required to read Confluence content")
 
     print(f"📘 Fetching Confluence page {page_id} …")
-    resp = requests.get(api, auth=(email, token))
+    timeout = int(os.getenv("EXTERNAL_FETCH_TIMEOUT_MS", "10000")) / 1000.0
+    resp = requests.get(api, auth=(email, token), timeout=timeout)
     if resp.status_code != 200:
         raise RuntimeError(f"Confluence API error {resp.status_code}: {resp.text[:200]}")
     data = resp.json()
@@ -66,12 +67,13 @@ def fetch_github_pr_context(gh: Github, pr_url: str, per_file_budget: int = 3000
     header = f"Title: {pr.title}\nAuthor: {pr.user.login if pr.user else 'unknown'}\nState: {pr.state}\nURL: {pr.html_url}\n\nBody:\n{pr.body or ''}"
     sections["PR"] = shorten(header, width=per_file_budget, placeholder="\n…\n")
 
+    files_limit = int(os.getenv("GITHUB_PR_FILES_LIMIT", "50"))
     try:
         files = list(pr.get_files())
     except Exception:
         files = []
     file_text_parts: List[str] = []
-    for f in files[:50]:
+    for f in files[:files_limit]:
         file_header = f"--- {f.filename} ({f.status}, +{f.additions}/-{f.deletions}) ---\n"
         patch = getattr(f, "patch", None) or ""
         file_text_parts.append(file_header + shorten(patch, width=per_file_budget, placeholder="\n…\n"))
@@ -79,4 +81,19 @@ def fetch_github_pr_context(gh: Github, pr_url: str, per_file_budget: int = 3000
         sections["FILES"] = "\n".join(file_text_parts)
     print(f"   ✅ PR files: {len(files)}")
     return sections
+
+
+def fetch_generic_page(url: str) -> Tuple[str, str]:
+    timeout = int(os.getenv("EXTERNAL_FETCH_TIMEOUT_MS", "10000")) / 1000.0
+    print(f"🌐 Fetching generic page: {url}")
+    resp = requests.get(url, timeout=timeout, headers={"User-Agent": "ai-pr-generator/1.0"})
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+    content_type = resp.headers.get("Content-Type", "")
+    text = resp.text
+    if "html" in content_type:
+        text = _strip_html(text)
+    title = url
+    print(f"   ✅ Generic page length: {len(text)} chars")
+    return title, text
 

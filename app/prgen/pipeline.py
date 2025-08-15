@@ -6,13 +6,13 @@ import tempfile
 from pathlib import Path
 from typing import List
 
-from .jira_client import get_jira_client, fetch_issue
+from .jira_client import get_jira_client, fetch_issue, get_related_links
 from .github_utils import get_github_client, create_pull_request
 from .git_utils import clone_and_branch, commit_push
 from .context_parsing import TicketContext
 from .repo_context import gather_candidate_files
-from .external_fetchers import fetch_confluence_page, fetch_github_pr_context
-from .ai_integration import call_gemini, summarize_text_with_gemini
+from .external_fetchers import fetch_confluence_page, fetch_github_pr_context, fetch_generic_page
+from .ai_integration import call_gemini, summarize_text_with_gemini, synthesize_summaries_with_gemini
 from .prompt_builder import build_prompt
 
 
@@ -41,7 +41,7 @@ def extract_repo_url(issue) -> str:
     raise ValueError("Repository URL must be specified in ticket description or custom field.")
 
 
-def gather_external_context(ctx: TicketContext, gh, external_budget_chars: int):
+def gather_external_context(ctx: TicketContext, gh, external_budget_chars: int, ticket_summary: str, ticket_instructions: str):
     blocks = {}
     for idx, url in enumerate(ctx.confluence_urls, start=1):
         try:
@@ -57,16 +57,33 @@ def gather_external_context(ctx: TicketContext, gh, external_budget_chars: int):
                     blocks[f"GITHUB_PR[{idx}] {subkey}"] = content
             except Exception as e:
                 blocks[f"GITHUB_PR[{idx}] ERROR"] = f"Failed to fetch {url}: {e}"
+    # Generic pages
+    for idx, url in enumerate(ctx.generic_urls, start=1):
+        try:
+            title, text = fetch_generic_page(url)
+            blocks[f"WEB[{idx}]: {title}"] = text
+        except Exception as e:
+            blocks[f"WEB[{idx}] ERROR"] = f"Failed to fetch {url}: {e}"
 
     if not blocks:
         return blocks
 
     enable_summarization = os.getenv("SUMMARIZE_EXTERNAL_CONTEXT", "true").lower() in {"1", "true", "yes"}
-    per_summary_limit = max(external_budget_chars // max(len(blocks), 1), 500)
+    configured_per_source_cap = int(os.getenv("PER_SOURCE_SUMMARY_CHAR_LIMIT", "3000"))
+    per_summary_limit = min(
+        max(external_budget_chars // max(len(blocks), 1), 500),
+        configured_per_source_cap,
+    )
     if enable_summarization:
         summarized = {}
         for label, text in blocks.items():
-            summarized[label] = summarize_text_with_gemini(text, label, char_limit=per_summary_limit)
+            summarized[label] = summarize_text_with_gemini(
+                text,
+                label,
+                char_limit=per_summary_limit,
+                ticket_summary=ticket_summary,
+                ticket_instructions=ticket_instructions,
+            )
         blocks = summarized
 
     # Final trim to budget
@@ -78,10 +95,40 @@ def gather_external_context(ctx: TicketContext, gh, external_budget_chars: int):
 
 def generate_changes_with_ai(issue, repo_path: Path, gh) -> List[dict]:
     ctx = TicketContext(issue.fields.description or "")
+    # Merge related links from Jira remote links into the context
+    try:
+        jira = get_jira_client()
+        related_urls = get_related_links(jira, issue)
+    except Exception:
+        related_urls = []
+    # Feed related urls back into classification (simple append to generic for now)
+    for u in related_urls:
+        if u not in ctx.confluence_urls and u not in ctx.github_pr_urls and u not in ctx.github_issue_urls and u not in ctx.github_commit_urls and u not in ctx.generic_urls:
+            # naive classification
+            if 'atlassian.net/wiki' in u or '/wiki/spaces/' in u or 'confluence' in u:
+                ctx.confluence_urls.append(u)
+            elif re.search(r"https://github\.com/[^/]+/[^/]+/pull/\d+", u):
+                ctx.github_pr_urls.append(u)
+            elif re.search(r"https://github\.com/[^/]+/[^/]+/issues/\d+", u):
+                ctx.github_issue_urls.append(u)
+            elif re.search(r"https://github\.com/[^/]+/[^/]+/commit/[0-9a-fA-F]{6,40}", u):
+                ctx.github_commit_urls.append(u)
+            else:
+                ctx.generic_urls.append(u)
     budget_chars = int(os.getenv("MAX_PROMPT_TOKENS", "6000"))
     repo_snippets = gather_candidate_files(repo_path, hinted_paths=ctx.file_paths, budget_chars=budget_chars)
-    external_budget = int(os.getenv("MAX_EXTERNAL_CONTEXT_CHARS", "6000"))
-    external_blocks = gather_external_context(ctx, gh, external_budget)
+    external_budget = int(os.getenv("MAX_EXTERNAL_CONTEXT_CHARS", "20000"))
+    ticket_summary = getattr(issue.fields, 'summary', '') or ''
+    ticket_instructions = ctx.instructions
+    external_blocks = gather_external_context(ctx, gh, external_budget, ticket_summary, ticket_instructions)
+
+    # Optional cross-source synthesis block
+    if os.getenv("ENABLE_CROSS_SOURCE_SYNTHESIS", "true").lower() in {"1", "true", "yes"} and external_blocks:
+        synthesis_limit = int(os.getenv("SYNTHESIS_CHAR_LIMIT", "2000"))
+        # Build summaries block
+        summaries_block = "\n\n".join([f"[{k}]\n{v}" for k, v in external_blocks.items()])
+        synthesis = synthesize_summaries_with_gemini(summaries_block, ticket_summary, ticket_instructions, char_limit=synthesis_limit)
+        external_blocks = {"SYNTHESIS": synthesis, **external_blocks}
     prompt = build_prompt(issue, ctx, repo_snippets, external_blocks)
     json_text = call_gemini(prompt)
     import json
