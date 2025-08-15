@@ -114,13 +114,29 @@ def generate_changes_with_ai(issue, repo_path: Path, gh) -> List[dict]:
             elif re.search(r"https://github\.com/[^/]+/[^/]+/commit/[0-9a-fA-F]{6,40}", u):
                 ctx.github_commit_urls.append(u)
             else:
-                ctx.generic_urls.append(u)
+                # Skip raw repo roots even if found in related links
+                if not re.search(r"https://github\.com/[^/]+/[^/]+(\.git)?/?$", u):
+                    ctx.generic_urls.append(u)
     budget_chars = int(os.getenv("MAX_PROMPT_TOKENS", "6000"))
     repo_snippets = gather_candidate_files(repo_path, hinted_paths=ctx.file_paths, budget_chars=budget_chars)
     external_budget = int(os.getenv("MAX_EXTERNAL_CONTEXT_CHARS", "20000"))
     ticket_summary = getattr(issue.fields, 'summary', '') or ''
     ticket_instructions = ctx.instructions
+    # Log which sources will be used
+    print("🔎 External sources:")
+    print(f"   Confluence: {len(ctx.confluence_urls)} -> {ctx.confluence_urls}")
+    print(f"   GitHub PRs: {len(ctx.github_pr_urls)} -> {ctx.github_pr_urls}")
+    if ctx.generic_urls:
+        print(f"   Generic: {len(ctx.generic_urls)} -> {ctx.generic_urls}")
+
     external_blocks = gather_external_context(ctx, gh, external_budget, ticket_summary, ticket_instructions)
+    if external_blocks:
+        gained = [k for k in external_blocks.keys()]
+        print(f"✅ External context gathered: {len(gained)} block(s)")
+        for k in gained:
+            print(f"   - {k}")
+    else:
+        print("ℹ️  No external context gathered")
 
     # Optional cross-source synthesis block
     if os.getenv("ENABLE_CROSS_SOURCE_SYNTHESIS", "true").lower() in {"1", "true", "yes"} and external_blocks:

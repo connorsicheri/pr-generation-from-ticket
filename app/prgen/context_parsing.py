@@ -45,16 +45,36 @@ class TicketContext:
         github_commit_urls: List[str] = []
         generic_urls: List[str] = []
         for u in all_urls:
-            if 'atlassian.net/wiki' in u or '/wiki/spaces/' in u or 'confluence' in u:
-                confluence_urls.append(u.rstrip('.,;)'))
-            if re.search(r"https://github\.com/[^/]+/[^/]+/pull/\d+", u):
-                github_pr_urls.append(u.rstrip('.,;)'))
-            elif re.search(r"https://github\.com/[^/]+/[^/]+/issues/\d+", u):
-                github_issue_urls.append(u.rstrip('.,;)'))
-            elif re.search(r"https://github\.com/[^/]+/[^/]+/commit/[0-9a-fA-F]{6,40}", u):
-                github_commit_urls.append(u.rstrip('.,;)'))
+            clean_u = u.rstrip('.,;)')
+            # Ignore raw repo URLs (not useful as content sources)
+            if re.search(r"https://github\.com/[^/]+/[^/]+(\.git)?/?$", clean_u):
+                continue
+            if ('atlassian.net/wiki' in clean_u) or ('/wiki/spaces/' in clean_u) or ('confluence' in clean_u):
+                confluence_urls.append(clean_u)
+            elif re.search(r"https://github\.com/[^/]+/[^/]+/pull/\d+", clean_u):
+                github_pr_urls.append(clean_u)
+            elif re.search(r"https://github\.com/[^/]+/[^/]+/issues/\d+", clean_u):
+                github_issue_urls.append(clean_u)
+            elif re.search(r"https://github\.com/[^/]+/[^/]+/commit/[0-9a-fA-F]{6,40}", clean_u):
+                github_commit_urls.append(clean_u)
             else:
-                generic_urls.append(u.rstrip('.,;)'))
+                generic_urls.append(clean_u)
+
+        # De-duplicate while preserving order
+        def dedupe(seq: List[str]) -> List[str]:
+            seen = set()
+            out: List[str] = []
+            for item in seq:
+                if item not in seen:
+                    seen.add(item)
+                    out.append(item)
+            return out
+
+        confluence_urls = dedupe(confluence_urls)
+        github_pr_urls = dedupe(github_pr_urls)
+        github_issue_urls = dedupe(github_issue_urls)
+        github_commit_urls = dedupe(github_commit_urls)
+        generic_urls = dedupe(generic_urls)
 
         instructions = re.sub(file_regex, "", text)
         instructions = re.sub(backtick_regex, "", instructions).strip()
