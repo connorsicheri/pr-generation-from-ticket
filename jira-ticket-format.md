@@ -18,6 +18,7 @@ The description should contain:
 - **File paths** in Jira code blocks: {{src/components/Button.tsx}} (or backticks as fallback: `src/components/Button.tsx`)
 - **Clear instructions** about what to implement
 - **Context** about the feature/fix
+ - **Optional references**: Confluence page links and/or GitHub PR links to provide background context
 
 ### **3. Repository URL (Custom Field)**
 - Must be configured in your Jira instance
@@ -52,6 +53,10 @@ The toggle should:
 When dark mode is enabled, update the main layout in `src/components/Layout.tsx` to apply the dark theme class.
 
 Repository URL: https://github.com/company/frontend-app.git
+
+References:
+- Confluence: https://your-domain.atlassian.net/wiki/spaces/ENG/pages/123456789/Dark+Mode+Spec
+- Prior PR: https://github.com/company/frontend-app/pull/42
 ```
 
 ### **Example 2: Bug Fix**

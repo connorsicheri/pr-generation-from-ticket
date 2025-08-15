@@ -10,3 +10,4 @@ dependencies:
     - PyGithub==1.59.1
     - google-generativeai==0.3.2
     - tiktoken
+    - requests>=2.31.0

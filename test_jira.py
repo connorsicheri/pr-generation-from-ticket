@@ -113,7 +113,7 @@ def test_jira_connection():
         sys.path.append(os.path.dirname(os.path.abspath(__file__)))
         
         try:
-            from main import TicketContext
+            from app.prgen.context_parsing import TicketContext
             
             print('🔍 Parsing ticket description for file paths...')
             ctx = TicketContext(issue.fields.description or "")
