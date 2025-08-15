@@ -37,7 +37,11 @@ def summarize_text_with_gemini(text: str, label: str, char_limit: int = 1500, ti
     )
     try:
         summarized = call_gemini(summary_prompt)
-        return shorten(summarized, width=char_limit, placeholder="\n…\n")
+        summarized = shorten(summarized, width=char_limit, placeholder="\n…\n")
+        preview_n = int(os.getenv("LOG_SUMMARY_PREVIEW_CHARS", "400"))
+        if preview_n > 0:
+            print(f"📝 Summary for [{label}] ({len(summarized)} chars):\n{summarized[:preview_n]}{'…' if len(summarized) > preview_n else ''}")
+        return summarized
     except Exception:
         return shorten(text, width=char_limit, placeholder="\n…\n")
 
@@ -53,7 +57,11 @@ def synthesize_summaries_with_gemini(summaries_block: str, ticket_summary: str, 
     )
     try:
         result = call_gemini(prompt)
-        return shorten(result, width=char_limit, placeholder="\n…\n")
+        result = shorten(result, width=char_limit, placeholder="\n…\n")
+        preview_n = int(os.getenv("LOG_SUMMARY_PREVIEW_CHARS", "400"))
+        if preview_n > 0:
+            print(f"🧭 Synthesis summary ({len(result)} chars):\n{result[:preview_n]}{'…' if len(result) > preview_n else ''}")
+        return result
     except Exception:
         return shorten(summaries_block, width=char_limit, placeholder="\n…\n")
 

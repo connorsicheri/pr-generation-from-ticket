@@ -27,6 +27,9 @@ For each user (e.g., `manager`, `chris`):
    - `SYNTHESIS_CHAR_LIMIT` (default `2000`) – cap for the synthesis brief
    - `EXTERNAL_FETCH_TIMEOUT_MS` (default `10000`) – timeout for fetching external pages
    - `GITHUB_PR_FILES_LIMIT` (default `50`) – limit PR files examined
+   - `LOG_PROMPT_PREVIEW_CHARS` (default `800`) – logs the first N chars of the prompt
+   - `LOG_MODEL_OUTPUT_PREVIEW_CHARS` (default `600`) – logs the first N chars of the model output
+   - `LOG_SUMMARY_PREVIEW_CHARS` (default `400`) – logs the first N chars of per-source and synthesis summaries
 
 ### Run the workflow
 

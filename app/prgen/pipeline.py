@@ -131,6 +131,13 @@ def generate_changes_with_ai(issue, repo_path: Path, gh) -> List[dict]:
         external_blocks = {"SYNTHESIS": synthesis, **external_blocks}
     prompt = build_prompt(issue, ctx, repo_snippets, external_blocks)
     json_text = call_gemini(prompt)
+    # Log a compact preview of the model output
+    try:
+        preview_n = int(os.getenv("LOG_MODEL_OUTPUT_PREVIEW_CHARS", "600"))
+        if preview_n > 0:
+            print(f"📤 Model output preview ({len(json_text)} chars):\n{json_text[:preview_n]}{'…' if len(json_text) > preview_n else ''}")
+    except Exception:
+        pass
     import json
     try:
         cleaned_text = json_text.strip()

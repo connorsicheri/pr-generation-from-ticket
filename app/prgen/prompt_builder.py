@@ -18,6 +18,15 @@ def build_prompt(issue, ctx: TicketContext, repo_snippets: Dict[str, str], exter
         prompt += "\nExternal references (read‑only context):\n"
         for label, content in external_blocks.items():
             prompt += f"--- BEGIN {label} ---\n{content}\n--- END {label} ---\n"
+    # Log a compact preview of what we are sending to the model
+    try:
+        from os import getenv
+        preview_n = int(getenv("LOG_PROMPT_PREVIEW_CHARS", "800"))
+        if preview_n > 0:
+            preview = (prompt[:preview_n] + ("…" if len(prompt) > preview_n else ""))
+            print(f"🧾 Prompt preview ({len(prompt)} chars total):\n{preview}")
+    except Exception:
+        pass
     prompt += (
         "\nReturn ONLY valid JSON shaped as:\n"
         "{ \"patches\": [ { \"path\": \"relative/file\", \"content\": \"new content…\" }, … ] }\n"
