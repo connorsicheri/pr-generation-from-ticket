@@ -137,6 +137,20 @@ conda activate pr-generation-from-ticket
 ./run.sh ENG-1234
 ```
 
+## ✅ Tests
+
+Run unit tests locally with pytest:
+
+```bash
+conda activate pr-generation-from-ticket
+pytest -q
+```
+
+Included tests:
+- Context parsing (file paths and URLs)
+- Health checks (env variables)
+- Prompt builder structure
+
 ## 🔍 Troubleshooting CI
 
 - Verify the environment name passed to the workflow matches an existing GitHub Environment
