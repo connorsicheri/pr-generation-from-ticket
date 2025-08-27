@@ -8,6 +8,7 @@ from typing import List
 from app.prgen.jira_client import get_jira_client, fetch_issue
 from app.prgen.github_utils import get_github_client
 from app.prgen.git_utils import clone_and_branch, commit_push
+from app.prgen.git_utils import get_unified_diff
 from app.prgen.pipeline import apply_patches, extract_repo_url
 from app.reviewer_agent.agent import run_reviewer_agent
 from app.updater_agent.agent import run_updater_agent
@@ -60,6 +61,13 @@ def run_pipeline(issue_key: str):
         current_patches: List[dict] = []
         for iteration in range(1, max_iters + 1):
             print(f"🔁 Review iteration {iteration}/{max_iters}")
+            # Compute a unified diff against the base branch for the reviewer
+            base_branch = os.getenv("DEFAULT_BASE_BRANCH", "main")
+            try:
+                unified_diff = get_unified_diff(repo_path, base_branch, pr_branch)
+            except Exception as e:
+                print(f"ℹ️  Could not compute diff: {e}")
+                unified_diff = None
             review = run_reviewer_agent(
                 issue.key,
                 ticket_summary,
@@ -67,6 +75,7 @@ def run_pipeline(issue_key: str):
                 external_blocks,
                 repo_snippets,
                 current_patches,
+                unified_diff,
             )
             print(f"🧪 Reviewer outcome: {review.get('outcome')}")
             for c in (review.get('comments') or [])[:5]:

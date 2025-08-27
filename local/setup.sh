@@ -51,3 +51,5 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
 else
     echo "💭 You can generate the environment template later by running: ./configure_env.sh"
 fi
+
+

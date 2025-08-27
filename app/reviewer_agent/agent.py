@@ -14,6 +14,7 @@ def run_reviewer_agent(
     external_blocks: Dict[str, str] | None,
     repo_snippets: Dict[str, str],
     patches: List[dict],
+    unified_diff: str | None = None,
 ) -> dict:
     prompt = build_review_prompt(
         issue_key,
@@ -22,6 +23,7 @@ def run_reviewer_agent(
         external_blocks,
         repo_snippets,
         patches,
+        unified_diff,
     )
     response = call_gemini(prompt)
     try:

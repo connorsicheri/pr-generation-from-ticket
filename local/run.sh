@@ -67,3 +67,5 @@ python app/main.py "$ISSUE_KEY"
 
 echo ""
 echo "🎉 Done! Check your GitHub repository for the new pull request."
+
+

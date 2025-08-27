@@ -104,3 +104,52 @@ def commit_push(repo_path: Path, branch_name: str, message: str):
                 pass
         raise
 
+
+
+def run_get_output(cmd: List[str], cwd: str | Path | None = None) -> str:
+    """Run a command and return stdout; raise on non-zero exit."""
+    print(f"💻 Running (capture): {' '.join(cmd)}")
+    if cwd:
+        print(f"   📁 Working directory: {cwd}")
+    proc = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    if proc.returncode != 0:
+        if proc.stderr:
+            print("   🔻 stderr:")
+            print(proc.stderr.strip())
+        print(f"   ❌ Command failed with exit code {proc.returncode}")
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+    return proc.stdout
+
+
+def get_unified_diff(repo_path: Path, base_ref: str, head_ref: str | None = None) -> str:
+    """Return unified diff between origin/base_ref and head_ref (or HEAD).
+
+    Uses three-dot syntax to diff against the merge base: origin/base_ref...HEAD.
+    """
+    try:
+        # Ensure we have the latest refs for base and head
+        run(["git", "fetch", "origin", base_ref], cwd=repo_path)
+    except Exception:
+        pass
+    if head_ref:
+        try:
+            run(["git", "fetch", "origin", head_ref], cwd=repo_path)
+        except Exception:
+            pass
+    left = f"origin/{base_ref}"
+    right = head_ref and f"origin/{head_ref}" or "HEAD"
+    args = [
+        "git",
+        "diff",
+        "--unified=3",
+        "--no-color",
+        "--find-renames",
+        "--find-copies",
+        f"{left}...{right}",
+    ]
+    try:
+        return run_get_output(args, cwd=repo_path)
+    except subprocess.CalledProcessError:
+        # Fallback to two-dot diff if three-dot fails
+        args[-1] = f"{left}..{right}"
+        return run_get_output(args, cwd=repo_path)

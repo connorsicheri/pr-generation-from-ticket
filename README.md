@@ -94,15 +94,32 @@ Notes:
 ### Verify end-to-end
 
 - Ensure your workflow listens to repository dispatch events with type `jira-ai-pr` (see `.github/workflows/ai-pr-from-jira.yml`).
-- Manually test the dispatch with curl:
-  ```bash
-  curl -X POST \
-    -H "Authorization: Bearer <GH_PAT>" \
-    -H "Accept: application/vnd.github+json" \
-    -H "Content-Type: application/json" \
-    https://api.github.com/repos/<owner>/<repo>/dispatches \
-    -d '{"event_type":"jira-ai-pr","client_payload":{"issue_key":"ENG-1234","env_name":"manager"}}'
-  ```
+
+### Trigger via GitHub Action using curl (with PAT)
+
+1) Create a GitHub Personal Access Token (PAT):
+- Go to `https://github.com/settings/tokens` and generate a classic token
+- Scopes: `repo` (and `workflow` if your org policy requires it)
+
+2) Run the curl command to dispatch the workflow:
+```bash
+GH_PAT="<your_pat_here>"
+OWNER="<owner>"           # e.g., your-org
+REPO="<repo>"             # e.g., your-repo
+ISSUE_KEY="ENG-1234"      # Jira issue key to process
+ENV_NAME="manager"        # GitHub Environment name configured with secrets
+
+curl -X POST \
+  -H "Authorization: Bearer ${GH_PAT}" \
+  -H "Accept: application/vnd.github+json" \
+  -H "Content-Type: application/json" \
+  "https://api.github.com/repos/${OWNER}/${REPO}/dispatches" \
+  -d "{\"event_type\":\"jira-ai-pr\",\"client_payload\":{\"issue_key\":\"${ISSUE_KEY}\",\"env_name\":\"${ENV_NAME}\"}}"
+```
+
+Notes:
+- `env_name` must match a GitHub Environment that contains required secrets: `JIRA_URL`, `JIRA_TOKEN`, `GEMINI_API_KEY`, `GH_PAT` (and `JIRA_EMAIL` if applicable).
+- The workflow should reference these via `${{ secrets.* }}` or environment variables.
 
 ## 📝 Jira Ticket Format
 
@@ -126,16 +143,9 @@ References:
 
 📖 See full guide: [jira-ticket-format.md](jira-ticket-format.md)
 
-## 🛠 Local Example (optional)
+## 🛠 Running
 
-If you want to run locally for development/debugging:
-
-```bash
-./setup.sh
-conda activate pr-generation-from-ticket
-./configure_env.sh
-./run.sh ENG-1234
-```
+This project is intended to run via GitHub Actions. Local execution scripts are available under `local/`.
 
 ## ✅ Tests
 
@@ -161,11 +171,7 @@ Included tests:
 ## 📁 Project Files
 
 - **`app/main.py`**: The main AI PR generator script
-- **`environment.yml`**: Conda environment
-- **`environment-simple.yml`**: Simplified conda environment
-- **`setup.sh`**: Automated environment setup script (local dev)
-- **`configure_env.sh`**: Generates local `env_setup.sh` (local dev)
-- **`run.sh`**: Local runner with validation
+- **`local/`**: Optional local helper scripts (runner, setup, environment)
 - **`jira-ticket-format.md`**: Jira ticket formatting guide
 - **`.github/workflows/ai-pr-from-jira.yml`**: CI pipeline using per-user GitHub Environments
 - **`.gitignore`**, **`README.md`**, **`LICENSE`**
@@ -173,3 +179,17 @@ Included tests:
 ## 📄 License
 
 See LICENSE file for details.
+
+---
+
+## 🧪 Local Example (optional)
+
+If you want to run locally for development/debugging:
+
+```bash
+./local/setup.sh
+conda activate pr-generation-from-ticket
+cd local && ./configure_env.sh
+source env_setup.sh
+./run.sh ENG-1234
+```
