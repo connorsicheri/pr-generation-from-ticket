@@ -63,4 +63,4 @@ jobs:
           ENV_NAME_PRINT: ${{ steps.resolve.outputs.env_name }}
         run: |
           echo "Running for issue ${{ steps.resolve.outputs.issue_key }} in environment '${ENV_NAME_PRINT}'"
-          python app/main.py "${{ steps.resolve.outputs.issue_key }}"
+          python -m app.main "${{ steps.resolve.outputs.issue_key }}"
