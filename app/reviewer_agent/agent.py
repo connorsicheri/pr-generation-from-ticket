@@ -41,8 +41,8 @@ def run_reviewer_agent(
             raise ValueError("Reviewer outcome missing or invalid")
         return result
     except Exception as e:
-        print(f"❌ Reviewer agent returned invalid JSON: {e}")
-        print(f"Raw: {response[:500]}...")
+        print(f"❌ reviewer: invalid JSON: {e}")
+        print(f"🧾 reviewer raw (truncated): {response[:500]}...")
         return {
             "outcome": "request_changes",
             "comments": ["Reviewer parsing failed; please inspect changes manually."],

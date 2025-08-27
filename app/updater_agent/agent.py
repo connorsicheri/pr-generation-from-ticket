@@ -39,8 +39,8 @@ def run_updater_agent(
             raise ValueError("Updater output 'patches' is not a list")
         return patches
     except Exception as e:
-        print(f"❌ Updater agent returned invalid JSON: {e}")
-        print(f"Raw: {response[:500]}...")
+        print(f"❌ updater: invalid JSON: {e}")
+        print(f"🧾 updater raw (truncated): {response[:500]}...")
         return current_patches
 
 

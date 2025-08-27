@@ -23,7 +23,9 @@ def run_pipeline(issue_key: str):
     run_prgen_pipeline(issue_key)
 
     # 2) Start the Reviewer↔Updater loop to refine the PR
-    print("\n🔭 Entering Reviewer↔Updater loop")
+    print("\n" + "=" * 70)
+    print("🔭 Reviewer ↔ Updater Refinement")
+    print("=" * 70)
     jira = get_jira_client()
     issue = fetch_issue(jira, issue_key)
     gh = get_github_client()
@@ -41,7 +43,7 @@ def run_pipeline(issue_key: str):
         except Exception:
             continue
 
-    max_iters = int(os.getenv("REVIEW_LOOP_MAX_ITERS", "2"))
+    max_iters = int(os.getenv("REVIEW_LOOP_MAX_ITERS", "5"))
     if os.getenv("ENABLE_REVIEW_LOOP", "true").lower() not in {"1", "true", "yes"}:
         print("ℹ️  Review loop disabled")
         return
@@ -58,9 +60,24 @@ def run_pipeline(issue_key: str):
         ticket_instructions = ctx.instructions
         external_blocks = gather_external_context(ctx, gh, external_budget, ticket_summary, ticket_instructions)
 
+        # Context overview
+        base_branch_preview = os.getenv("DEFAULT_BASE_BRANCH", "main")
+        print("\n" + "-" * 70)
+        print("📋 Context")
+        print("-" * 70)
+        print(f"🎫 Ticket: {issue.key} — {ticket_summary}")
+        print(f"🌿 PR branch: {pr_branch}")
+        print(f"🔧 Base branch: {base_branch_preview}")
+        print(f"🗂️  Candidate files: {len(repo_snippets)}")
+        if external_blocks:
+            print(f"🌐 External context blocks: {len(external_blocks)}")
+        print("-" * 70)
+
         current_patches: List[dict] = []
         for iteration in range(1, max_iters + 1):
-            print(f"🔁 Review iteration {iteration}/{max_iters}")
+            print("\n" + "-" * 70)
+            print(f"🔁 Iteration {iteration}/{max_iters}")
+            print("-" * 70)
             # Compute a unified diff against the base branch for the reviewer
             base_branch = os.getenv("DEFAULT_BASE_BRANCH", "main")
             try:
@@ -77,10 +94,14 @@ def run_pipeline(issue_key: str):
                 current_patches,
                 unified_diff,
             )
-            print(f"🧪 Reviewer outcome: {review.get('outcome')}")
-            for c in (review.get('comments') or [])[:5]:
+            outcome = review.get('outcome')
+            comments = review.get('comments') or []
+            suggestions = review.get('suggestions') or []
+            print(f"🧪 Reviewer outcome: {outcome} | comments: {len(comments)} | suggestions: {len(suggestions)}")
+            for c in comments[:5]:
                 print(f"   💬 {c}")
             if review.get('outcome') == 'approve':
+                print("✅ Approved by reviewer — exiting loop.")
                 break
             new_patches = run_updater_agent(
                 issue.key,
@@ -92,9 +113,19 @@ def run_pipeline(issue_key: str):
                 review,
             )
             if not new_patches:
-                print("ℹ️  Updater did not produce patches; stopping loop.")
+                print("ℹ️  Updater did not produce patches — stopping loop.")
                 break
             apply_patches(new_patches, repo_path)
+            try:
+                changed_paths = [p.get('path') for p in new_patches if isinstance(p, dict)]
+                if changed_paths:
+                    print(f"📝 Files updated ({len(changed_paths)}):")
+                    for p in changed_paths[:10]:
+                        print(f"   • {p}")
+                    if len(changed_paths) > 10:
+                        print(f"   • … and {len(changed_paths) - 10} more")
+            except Exception:
+                pass
             commit_message = f"{issue.key}: reviewer updates"
             try:
                 commit_push(repo_path, pr_branch, commit_message)
@@ -102,6 +133,8 @@ def run_pipeline(issue_key: str):
                 print("ℹ️  No changes to commit in this iteration")
                 break
             current_patches = new_patches
+    print("\n" + "=" * 70)
     print("✅ Review loop finished")
+    print("=" * 70)
 
 
