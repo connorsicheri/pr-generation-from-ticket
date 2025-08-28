@@ -6,7 +6,13 @@ import tempfile
 from typing import List
 
 from app.prgen.jira_client import get_jira_client, fetch_issue
-from app.prgen.github_utils import get_github_client
+from app.prgen.github_utils import (
+    get_github_client,
+    find_open_pr,
+    post_pr_comment,
+    build_iteration_summary_comment,
+    read_latest_ai_state_from_comments,
+)
 from app.prgen.git_utils import clone_and_branch, commit_push
 from app.prgen.git_utils import get_unified_diff
 from app.prgen.pipeline import apply_patches, extract_repo_url
@@ -73,8 +79,30 @@ def run_pipeline(issue_key: str):
             print(f"🌐 External context blocks: {len(external_blocks)}")
         print("-" * 70)
 
+        # Try to find the PR to attach comments/state to
+        pr = find_open_pr(repo, desired_branch, expected_title=getattr(issue.fields, 'summary', None))
+        # Load previous loop state if present to resume
+        previous_state = read_latest_ai_state_from_comments(pr) if pr else None
+        start_iteration = 1
         current_patches: List[dict] = []
-        for iteration in range(1, max_iters + 1):
+        if isinstance(previous_state, dict):
+            try:
+                start_iteration = int(previous_state.get("next_iteration", 1))
+            except Exception:
+                start_iteration = 1
+            if isinstance(previous_state.get("current_patches"), list):
+                current_patches = previous_state.get("current_patches")
+
+        def _is_trivial_comment(text: str) -> bool:
+            t = (text or "").lower()
+            trivial_markers = [
+                "nit", "minor", "typo", "spelling", "whitespace", "format", "style",
+                "rename variable", "naming", "docstring", "comment only", "import order",
+                "lint", "trailing space", "indent", "prettier",
+            ]
+            return any(m in t for m in trivial_markers) and not any(k in t for k in ["bug", "security", "logic", "breaks", "failing", "error"])
+
+        for iteration in range(start_iteration, max_iters + 1):
             print("\n" + "-" * 70)
             print(f"🔁 Iteration {iteration}/{max_iters}")
             print("-" * 70)
@@ -100,7 +128,38 @@ def run_pipeline(issue_key: str):
             print(f"🧪 Reviewer outcome: {outcome} | comments: {len(comments)} | suggestions: {len(suggestions)}")
             for c in comments[:5]:
                 print(f"   💬 {c}")
-            if review.get('outcome') == 'approve':
+            # Adaptive stopping: auto-approve if only n trivial comments remain
+            trivial_threshold = int(os.getenv("REVIEW_TRIVIAL_THRESHOLD", "0"))
+            trivial_count = sum(1 for c in comments if _is_trivial_comment(c))
+            all_trivial = (len(comments) > 0 and trivial_count == len(comments)) or (len(comments) == 0)
+            auto_approved = False
+            changed_paths_for_comment: List[str] = []
+            if outcome == 'approve' or (trivial_threshold > 0 and len(comments) <= trivial_threshold and all_trivial):
+                auto_approved = (outcome != 'approve')
+                # Post iteration summary comment before exiting
+                if pr:
+                    state = {
+                        "iteration": iteration,
+                        "outcome": "approve",
+                        "auto_approved": auto_approved,
+                        "comments_count": len(comments),
+                        "suggestions_count": len(suggestions),
+                        "changed_files": changed_paths_for_comment,
+                        "current_patches": current_patches,
+                        "next_iteration": iteration + 1,
+                        "branch": pr_branch,
+                    }
+                    body = build_iteration_summary_comment(
+                        iteration=iteration,
+                        outcome="approve",
+                        comments_count=len(comments),
+                        suggestions_count=len(suggestions),
+                        changed_files=changed_paths_for_comment,
+                        branch=pr_branch,
+                        auto_approved=auto_approved,
+                        state=state,
+                    )
+                    post_pr_comment(pr, body)
                 print("✅ Approved by reviewer — exiting loop.")
                 break
             new_patches = run_updater_agent(
@@ -114,16 +173,40 @@ def run_pipeline(issue_key: str):
             )
             if not new_patches:
                 print("ℹ️  Updater did not produce patches — stopping loop.")
+                # Still post a summary comment to record the state
+                if pr:
+                    state = {
+                        "iteration": iteration,
+                        "outcome": outcome or "request_changes",
+                        "auto_approved": False,
+                        "comments_count": len(comments),
+                        "suggestions_count": len(suggestions),
+                        "changed_files": [],
+                        "current_patches": current_patches,
+                        "next_iteration": iteration + 1,
+                        "branch": pr_branch,
+                    }
+                    body = build_iteration_summary_comment(
+                        iteration=iteration,
+                        outcome=outcome or "request_changes",
+                        comments_count=len(comments),
+                        suggestions_count=len(suggestions),
+                        changed_files=[],
+                        branch=pr_branch,
+                        auto_approved=False,
+                        state=state,
+                    )
+                    post_pr_comment(pr, body)
                 break
             apply_patches(new_patches, repo_path)
             try:
-                changed_paths = [p.get('path') for p in new_patches if isinstance(p, dict)]
-                if changed_paths:
-                    print(f"📝 Files updated ({len(changed_paths)}):")
-                    for p in changed_paths[:10]:
+                changed_paths_for_comment = [p.get('path') for p in new_patches if isinstance(p, dict)]
+                if changed_paths_for_comment:
+                    print(f"📝 Files updated ({len(changed_paths_for_comment)}):")
+                    for p in changed_paths_for_comment[:10]:
                         print(f"   • {p}")
-                    if len(changed_paths) > 10:
-                        print(f"   • … and {len(changed_paths) - 10} more")
+                    if len(changed_paths_for_comment) > 10:
+                        print(f"   • … and {len(changed_paths_for_comment) - 10} more")
             except Exception:
                 pass
             commit_message = f"{issue.key}: reviewer updates"
@@ -131,8 +214,56 @@ def run_pipeline(issue_key: str):
                 commit_push(repo_path, pr_branch, commit_message)
             except SystemExit:
                 print("ℹ️  No changes to commit in this iteration")
+                # Post comment even if nothing to commit
+                if pr:
+                    state = {
+                        "iteration": iteration,
+                        "outcome": outcome or "request_changes",
+                        "auto_approved": False,
+                        "comments_count": len(comments),
+                        "suggestions_count": len(suggestions),
+                        "changed_files": changed_paths_for_comment,
+                        "current_patches": current_patches,
+                        "next_iteration": iteration + 1,
+                        "branch": pr_branch,
+                    }
+                    body = build_iteration_summary_comment(
+                        iteration=iteration,
+                        outcome=outcome or "request_changes",
+                        comments_count=len(comments),
+                        suggestions_count=len(suggestions),
+                        changed_files=changed_paths_for_comment,
+                        branch=pr_branch,
+                        auto_approved=False,
+                        state=state,
+                    )
+                    post_pr_comment(pr, body)
                 break
             current_patches = new_patches
+            # Post per-iteration summary with state persistence
+            if pr:
+                state = {
+                    "iteration": iteration,
+                    "outcome": outcome or "request_changes",
+                    "auto_approved": False,
+                    "comments_count": len(comments),
+                    "suggestions_count": len(suggestions),
+                    "changed_files": changed_paths_for_comment,
+                    "current_patches": current_patches,
+                    "next_iteration": iteration + 1,
+                    "branch": pr_branch,
+                }
+                body = build_iteration_summary_comment(
+                    iteration=iteration,
+                    outcome=outcome or "request_changes",
+                    comments_count=len(comments),
+                    suggestions_count=len(suggestions),
+                    changed_files=changed_paths_for_comment,
+                    branch=pr_branch,
+                    auto_approved=False,
+                    state=state,
+                )
+                post_pr_comment(pr, body)
     print("\n" + "=" * 70)
     print("✅ Review loop finished")
     print("=" * 70)
