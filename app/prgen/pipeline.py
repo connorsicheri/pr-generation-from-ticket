@@ -14,19 +14,42 @@ from .repo_context import gather_candidate_files
 from .external_fetchers import fetch_confluence_page, fetch_github_pr_context, fetch_generic_page
 from .ai_integration import call_gemini, summarize_text_with_gemini, synthesize_summaries_with_gemini
 from .prompt_builder import build_prompt
+from .guardrails import validate_and_normalize_changes
 
 
 def extract_repo_url(issue) -> str:
-    # Try description for GitHub URL
-    description = issue.fields.description or ""
-    if description:
-        github_urls = re.findall(r'https://github\.com/[^\s]+', description)
-        if github_urls:
-            return github_urls[0].rstrip('.,;)')
-        git_urls = re.findall(r'[^\s]*\.git[^\s]*', description)
-        if git_urls:
-            return git_urls[0].rstrip('.,;)')
+    """Extract and canonicalize the repository URL from the Jira issue.
 
+    Accepts any GitHub link (including blob/tree/issue paths) and normalizes to:
+    https://github.com/<owner>/<repo>.git
+    """
+    description = issue.fields.description or ""
+
+    def _canonical_from_text(text: str) -> list[str]:
+        if not text:
+            return []
+        # Capture owner/repo regardless of trailing path (blob/tree/..)
+        pattern = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:\.git)?(?:[/?#].*)?")
+        candidates: list[str] = []
+        for m in pattern.finditer(text):
+            owner, repo = m.group(1), m.group(2)
+            # strip common .git suffix if included in repo capture (unlikely due to regex), just ensure single .git once
+            repo = repo[:-4] if repo.endswith('.git') else repo
+            candidates.append(f"https://github.com/{owner}/{repo}.git")
+        # Also catch explicit .git URLs that may not start with https (rare)
+        git_urls = re.findall(r"[^\s]*\.git[^\s]*", text)
+        for u in git_urls:
+            if "github.com" in u:
+                # Try to parse owner/repo out of any .git URL
+                m2 = re.search(r"github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)\.git", u)
+                if m2:
+                    candidates.append(f"https://github.com/{m2.group(1)}/{m2.group(2)}.git")
+        return candidates
+
+    # Gather candidates from description first
+    candidates = _canonical_from_text(description)
+
+    # Then search known custom fields
     possible_repo_fields = [
         'customfield_11712',
         'customfield_12345', 'customfield_10001', 'customfield_10002', 'customfield_10003'
@@ -34,10 +57,23 @@ def extract_repo_url(issue) -> str:
     for field_name in possible_repo_fields:
         try:
             field_value = getattr(issue.fields, field_name, None)
-            if field_value and ('github.com' in str(field_value) or '.git' in str(field_value)):
-                return str(field_value)
+            if field_value:
+                candidates.extend(_canonical_from_text(str(field_value)))
         except Exception:
             continue
+
+    # De-duplicate while preserving order
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+
+    if unique:
+        # Prefer explicit .git roots (all are canonical already), just pick the first
+        return unique[0]
+
     raise ValueError("Repository URL must be specified in ticket description or custom field.")
 
 
@@ -175,8 +211,10 @@ def generate_changes_with_ai(issue, repo_path: Path, gh) -> List[dict]:
 
 
 def apply_patches(changes: List[dict], repo_path: Path):
-    print(f"💾 Writing {len(changes)} file(s)...")
-    for fc in changes:
+    # Validate against policy before writing
+    normalized = validate_and_normalize_changes(changes, repo_path)
+    print(f"💾 Writing {len(normalized)} file(s)...")
+    for fc in normalized:
         file_path = fc["path"]
         content = fc["content"]
         dst = repo_path / file_path

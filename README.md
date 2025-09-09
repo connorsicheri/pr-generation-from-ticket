@@ -123,25 +123,9 @@ Notes:
 
 ## 📝 Jira Ticket Format
 
-For best results, your Jira tickets should include:
+- To get the recommended ticket template: create an empty Jira ticket and add the label `ai-template`. The automation will populate the ticket with the template for you.
 
-- **File paths** in Jira code blocks: {{src/components/Button.tsx}} (fallback backticks also supported)
-- **Clear instructions** about what needs to be implemented
-- **Repository URL** in the ticket description (e.g., `https://github.com/org/repo.git`)
-- **External references (optional)**: Confluence page link(s) and/or GitHub PR link(s) to use as context (either in description or in Related links)
-
-Example ticket description:
-```
-Update the button component in {{src/components/Button.tsx}} to support a new 'loading' state.
-
-Repository URL: https://github.com/org/repo.git
-
-References:
-- Confluence: https://your-domain.atlassian.net/wiki/spaces/ENG/pages/123456789/Button+Design+Spec
-- Prior PR: https://github.com/org/repo/pull/1234
-```
-
-📖 See full guide: [jira-ticket-format.md](jira-ticket-format.md)
+📖 For additional details, see: [jira-ticket-format.md](jira-ticket-format.md)
 
 ## 🛠 Running
 
@@ -193,3 +177,29 @@ cd local && ./configure_env.sh
 source env_setup.sh
 ./run.sh ENG-1234
 ```
+
+## 🔒 AI Guardrails
+
+AI-generated file changes are validated centrally before they are written to disk. Configure guardrails via environment variables:
+
+- `AI_PR_ALLOW_PATHS`: optional comma-separated glob allowlist (e.g., `src/**,app/**`). If set, only matching paths are allowed.
+- `AI_PR_DENY_PATHS`: additional comma-separated glob deny patterns to block.
+- `AI_PR_MAX_PATCH_FILES`: max number of files per apply (default: `30`).
+- `AI_PR_MAX_PATCH_BYTES`: max total bytes across all files (default: `300000`).
+- `AI_PR_MAX_FILE_BYTES`: max bytes per single file (default: `120000`).
+
+Defaults always deny sensitive locations (unless explicitly allowed): `.git/**`, `.github/workflows/**`, `.env*`, SSH keys, certificate/key stores, and files containing common `secret`/`token` patterns.
+
+## 🧑‍⚖️ Critic Agent & CODEOWNERS Routing
+
+When enabled, a critic agent reviews the PR and posts a plain‑English comment summarizing risk and focus areas, and requests reviewers based on CODEOWNERS and the agent’s suggestions.
+
+Environment variables:
+
+- `ENABLE_CRITIC_AGENT` (default `true`): toggle critic pass
+- `CRITIC_ARCHITECTURE_CONTEXT`: optional free‑form text injected to the critic prompt describing your architecture (e.g., services, boundaries, data flow)
+
+The critic runs after initial PR creation and before/independent of the iterative review loop. If the loop is disabled, the critic still runs once and comments.
+
+- `ENABLE_CODEOWNERS_ROUTING` (default `false`): if true, in addition to GitHub’s native CODEOWNERS auto-requests, the pipeline will also programmatically request reviewers by combining CODEOWNERS for changed files with the critic’s `suggested_reviewers`.
+

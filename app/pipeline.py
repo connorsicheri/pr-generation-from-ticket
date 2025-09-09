@@ -12,6 +12,8 @@ from app.prgen.github_utils import (
     post_pr_comment,
     build_iteration_summary_comment,
     read_latest_ai_state_from_comments,
+    request_reviewers,
+    get_pr_changed_files,
 )
 from app.prgen.git_utils import clone_and_branch, commit_push
 from app.prgen.git_utils import get_unified_diff
@@ -22,6 +24,8 @@ from app.prgen.context_parsing import TicketContext
 from app.prgen.repo_context import gather_candidate_files
 from app.prgen.pipeline import gather_external_context
 from app.prgen.pipeline import run_pipeline as run_prgen_pipeline
+from app.critic_agent.agent import run_critic_agent
+from app.prgen.codeowners import owners_for_paths
 
 
 def run_pipeline(issue_key: str):
@@ -52,6 +56,44 @@ def run_pipeline(issue_key: str):
     max_iters = int(os.getenv("REVIEW_LOOP_MAX_ITERS", "5"))
     if os.getenv("ENABLE_REVIEW_LOOP", "true").lower() not in {"1", "true", "yes"}:
         print("ℹ️  Review loop disabled")
+        # Even if the review loop is disabled, run a critic pass and request owners
+        try:
+            if 'pr' not in locals() or pr is None:
+                # Try to find PR again
+                pr = find_open_pr(repo, desired_branch, expected_title=getattr(issue.fields, 'summary', None))
+            if pr:
+                changed_files = get_pr_changed_files(pr)
+                base_branch_preview = os.getenv("DEFAULT_BASE_BRANCH", "main")
+                unified_diff = None
+                try:
+                    from app.prgen.git_utils import get_unified_diff
+                    with tempfile.TemporaryDirectory(prefix="ai_pr_review_once_") as tmp_once:
+                        repo_path_tmp, _ = clone_and_branch(repo_url, pr_branch, Path(tmp_once))
+                        unified_diff = get_unified_diff(repo_path_tmp, base_branch_preview, pr_branch)
+                except Exception:
+                    pass
+                arch_context = os.getenv("CRITIC_ARCHITECTURE_CONTEXT", "")
+                review_result = run_critic_agent(
+                    issue.key,
+                    getattr(issue.fields, 'summary', '') or '',
+                    getattr(issue.fields, 'description', '') or '',
+                    changed_files,
+                    unified_diff,
+                    arch_context,
+                )
+                comment = review_result.get('comment') or 'Critic review completed.'
+                post_pr_comment(pr, comment)
+                # Optionally request reviewers (disabled by default; GitHub CODEOWNERS usually auto-requests)
+                if os.getenv("ENABLE_CODEOWNERS_ROUTING", "false").lower() in {"1", "true", "yes"}:
+                    try:
+                        owners = owners_for_paths(Path(tmp_once) / 'repo' if 'tmp_once' in locals() else Path('.'), changed_files)
+                    except Exception:
+                        owners = []
+                    suggested = review_result.get('suggested_reviewers') or []
+                    to_request = list(dict.fromkeys([*owners[:5], *suggested[:5]]))[:10]
+                    request_reviewers(pr, to_request)
+        except Exception as e:
+            print(f"ℹ️  Critic step failed: {e}")
         return
 
     with tempfile.TemporaryDirectory(prefix="ai_pr_review_") as tmp:
@@ -81,6 +123,34 @@ def run_pipeline(issue_key: str):
 
         # Try to find the PR to attach comments/state to
         pr = find_open_pr(repo, desired_branch, expected_title=getattr(issue.fields, 'summary', None))
+        # Initial critic pass before iterative loop
+        try:
+            if pr:
+                changed_files = get_pr_changed_files(pr)
+                arch_context = os.getenv("CRITIC_ARCHITECTURE_CONTEXT", "")
+                unified_diff = None
+                try:
+                    base_branch_preview = os.getenv("DEFAULT_BASE_BRANCH", "main")
+                    unified_diff = get_unified_diff(repo_path, base_branch_preview, pr_branch)
+                except Exception:
+                    pass
+                review_result = run_critic_agent(
+                    issue.key,
+                    ticket_summary,
+                    ticket_instructions,
+                    changed_files,
+                    unified_diff,
+                    arch_context,
+                )
+                comment = review_result.get('comment') or 'Critic review completed.'
+                post_pr_comment(pr, comment)
+                if os.getenv("ENABLE_CODEOWNERS_ROUTING", "false").lower() in {"1", "true", "yes"}:
+                    owners = owners_for_paths(repo_path, changed_files)
+                    suggested = review_result.get('suggested_reviewers') or []
+                    to_request = list(dict.fromkeys([*owners[:5], *suggested[:5]]))[:10]
+                    request_reviewers(pr, to_request)
+        except Exception as e:
+            print(f"ℹ️  Initial critic step failed: {e}")
         # Load previous loop state if present to resume
         previous_state = read_latest_ai_state_from_comments(pr) if pr else None
         start_iteration = 1

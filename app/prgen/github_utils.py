@@ -27,6 +27,17 @@ def create_pull_request(gh: Github, repo_full_name: str, branch: str, base: str,
 # --- Reviewer loop helpers ---
 
 AI_STATE_MARKER = "[AI-REVIEW-STATE]"
+
+
+def request_reviewers(pr, reviewers: List[str]) -> None:
+    """Request reviewers on a PR. Ignores errors (e.g., names not in org)."""
+    try:
+        if not reviewers:
+            return
+        # GitHub API: request_reviewers(users=[..])
+        pr.create_review_request(reviewers=reviewers)
+    except Exception as e:
+        print(f"ℹ️  Failed to request reviewers: {e}")
 AI_SUMMARY_HEADER = "[AI Review Loop]"
 
 
@@ -48,6 +59,19 @@ def post_pr_comment(pr, body: str) -> None:
         pr.create_issue_comment(body)
     except Exception as e:
         print(f"ℹ️  Failed to post PR comment: {e}")
+
+
+def get_pr_changed_files(pr, limit: int = 200) -> List[str]:
+    """Return list of changed file paths in a PR (head vs base)."""
+    files: List[str] = []
+    try:
+        for f in pr.get_files():
+            files.append(getattr(f, "filename", ""))
+            if len(files) >= limit:
+                break
+    except Exception as e:
+        print(f"ℹ️  Failed to list PR files: {e}")
+    return files
 
 
 def build_iteration_summary_comment(
