@@ -66,7 +66,6 @@ def run_pipeline(issue_key: str):
                 base_branch_preview = os.getenv("DEFAULT_BASE_BRANCH", "main")
                 unified_diff = None
                 try:
-                    from app.prgen.git_utils import get_unified_diff
                     with tempfile.TemporaryDirectory(prefix="ai_pr_review_once_") as tmp_once:
                         repo_path_tmp, _ = clone_and_branch(repo_url, pr_branch, Path(tmp_once))
                         unified_diff = get_unified_diff(repo_path_tmp, base_branch_preview, pr_branch)
@@ -98,7 +97,7 @@ def run_pipeline(issue_key: str):
 
     with tempfile.TemporaryDirectory(prefix="ai_pr_review_") as tmp:
         print(f"📁 Using temporary directory for review loop: {tmp}")
-        repo_path, _ = clone_and_branch(repo_url, pr_branch, Path(tmp))
+        repo_path, pr_branch = clone_and_branch(repo_url, pr_branch, Path(tmp))
 
         ctx = TicketContext(issue.fields.description or "")
         budget_chars = int(os.getenv("MAX_PROMPT_TOKENS", "6000"))
